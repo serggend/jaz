@@ -85,6 +85,23 @@ func (m *Manager) configureOpenCode(env map[string]string, agent AgentConfig, pr
 			providerID := modelprovider.OpenCodeProviderIDFromModel(model)
 			content.Provider = map[string]openCodeProviderConfig{providerID: providerConfig}
 		}
+		// OpenCode can switch providers and models on its own, so give it every
+		// configured chat provider: its model picker then covers all plans.
+		activeID := modelprovider.OpenCodeProviderIDFromModel(model)
+		for id := range m.providers() {
+			if id == activeID {
+				continue
+			}
+			resolved := modelprovider.ResolveModelProvider(id, m.providers())
+			providerConfig, ok := m.openCodeProviderConfigFor(id, resolved, "")
+			if !ok {
+				continue
+			}
+			if keyEnv := modelprovider.ConfiguredAPIKeyEnv(id, resolved.Config); keyEnv != "" {
+				providerConfig.Options = &openCodeProviderOptions{APIKey: "{env:" + keyEnv + "}"}
+			}
+			content.Provider[id] = providerConfig
+		}
 	}
 	if model != "" {
 		content.Model = model
@@ -118,6 +135,12 @@ func (m *Manager) openCodeProviderConfig(model string) (openCodeProviderConfig, 
 		return openCodeProviderConfig{}, false
 	}
 	provider := modelprovider.ResolveModelProvider(providerID, m.providers())
+	return m.openCodeProviderConfigFor(providerID, provider, modelID)
+}
+
+// openCodeProviderConfigFor builds the OpenCode provider entry for a resolved
+// provider, advertising its explicit catalog (if any) plus the model in use.
+func (m *Manager) openCodeProviderConfigFor(providerID string, provider modelprovider.ResolvedModelProvider, modelID string) (openCodeProviderConfig, bool) {
 	if !provider.Meta.SupportsCapability(modelprovider.CapabilityChatCompletions) {
 		return openCodeProviderConfig{}, false
 	}
