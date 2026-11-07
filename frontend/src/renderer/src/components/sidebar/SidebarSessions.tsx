@@ -3,6 +3,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { Folder, SquarePen } from 'lucide-react'
 import { motion, Reorder, type Transition, useDragControls } from 'motion/react'
 import { useEffect, useMemo, useState } from 'react'
+import { BotAvatar, BotsGlyph } from '@/components/bots/BotAvatar'
 import { AnimatedList, AnimatedListItem } from '@/components/ui/AnimatedList'
 import { Collapse } from '@/components/ui/Collapse'
 import { HoverCardGroup } from '@/components/ui/HoverCard'
@@ -14,6 +15,7 @@ import {
   sidebarSessionsQuery,
   type SessionListItem,
 } from '@/lib/api/sessions'
+import { botsQuery } from '@/lib/api/bots'
 import { useShowModelIcons } from '@/lib/appearance'
 import { modalDialogOpen } from '@/lib/dom/modal'
 import { useMetaHeld } from '@/lib/hooks/useMetaHeld'
@@ -26,6 +28,7 @@ import {
   useSidebarOrganization,
 } from './SidebarOrganizationMenu'
 import {
+  botSessionGroups,
   applySidebarProjectOrder,
   applySessionDragOrder,
   sessionDisplayBlocks,
@@ -334,11 +337,15 @@ function storedCollapsedBots(): boolean {
   }
 }
 
-function BotWorkerSessions({ open }: { open: boolean }) {
+function BotWorkerSessions() {
   const sessions = useQuery(botWorkerSessionsQuery)
+  const bots = useQuery(botsQuery)
+  const groups = useMemo(
+    () => botSessionGroups(sessions.data ?? [], bots.data ?? []),
+    [sessions.data, bots.data],
+  )
   const [collapsed, setCollapsed] = useState(storedCollapsedBots)
   if (sessions.isPending || sessions.isError || !sessions.data?.length) return null
-  const items: SessionListItem[] = sessions.data.map((session) => ({ session, child: false }))
   const running = sessions.data.filter((session) => session.status === 'running').length
   const toggle = () => {
     setCollapsed((current) => {
@@ -355,17 +362,24 @@ function BotWorkerSessions({ open }: { open: boolean }) {
         aria-label={`${collapsed ? 'Expand' : 'Collapse'} bot chats`}
         className={`flex h-[30px] w-full items-center gap-2 rounded-lg px-2.5 text-left outline-none transition-colors duration-150 hover:bg-list-hover max-sm:h-11 ${SECTION_LABEL_CLASS}`}
       >
-        <Collapse open={!collapsed}>
-          <span />
-        </Collapse>
         <span className="min-w-0 truncate">
           Bots
           {running > 0 ? <span className="ml-1.5 text-primary">{running} active</span> : null}
-          <span className="ml-1.5 text-ink-3">{items.length}</span>
+          <span className="ml-1.5 text-ink-3">{sessions.data.length}</span>
         </span>
       </button>
       <Collapse open={!collapsed}>
-        <SessionRows items={items} shortcutByID={new Map()} shortcutMode={false} reserveIconSpace={false} />
+        {groups.map((group) => (
+          <div key={group.key} role="group" aria-label={group.label}>
+            <p className={`flex h-[30px] items-center gap-2 px-2.5 max-sm:h-11 max-sm:px-3 ${GROUP_LABEL_CLASS}`}>
+              <span className="grid size-[18px] shrink-0 place-items-center">
+                {group.bot ? <BotAvatar avatar={group.bot.avatar} size={15} /> : <BotsGlyph width={15} height={15} />}
+              </span>
+              <span className="min-w-0 truncate" title={group.label}>{group.label}</span>
+            </p>
+            <SessionRows items={group.items} shortcutByID={new Map()} shortcutMode={false} />
+          </div>
+        ))}
       </Collapse>
     </div>
   )
@@ -465,7 +479,7 @@ export function SidebarSessions({ open }: { open: boolean }) {
           shortcutByID={shortcutByID}
           shortcutMode={shortcutMode}
         />
-        <BotWorkerSessions open={open} />
+        <BotWorkerSessions />
         <div>
           <SidebarOrganizationMenu organization={organization} onChange={changeOrganization} />
           {organization === 'project' ? (

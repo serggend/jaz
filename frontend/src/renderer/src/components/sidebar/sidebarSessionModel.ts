@@ -1,4 +1,5 @@
 import type { Project, SessionListItem } from '@/lib/api/sessions'
+import type { Bot, Session } from '@/lib/api/types'
 
 export const SESSION_PAGE_SIZE = 50
 const PROJECT_SESSION_LIMIT = 5
@@ -154,4 +155,20 @@ export function sessionDisplayBlocks(
     ...sessionPage(ungrouped, showAllUngrouped ? ungrouped.length : PROJECT_SESSION_LIMIT),
   })
   return blocks
+}
+
+export function botSessionGroups(sessions: Session[], bots: Bot[]) {
+  const byID = new Map(bots.map((bot) => [bot.id, bot]))
+  const groups = new Map<string, { key: string; bot?: Bot; label: string; items: SessionListItem[] }>()
+  for (const session of sessions) {
+    const key = session.source_id ?? ''
+    let group = groups.get(key)
+    if (!group) {
+      const bot = byID.get(key)
+      group = { key, bot, label: bot?.name ?? (key ? `Bot ${key}` : 'Unknown bot'), items: [] }
+      groups.set(key, group)
+    }
+    group.items.push({ session, child: false })
+  }
+  return [...groups.values()]
 }

@@ -72,6 +72,7 @@ export interface Session {
   // What started the thread, such as 'bot' for a bot's own thread or
   // 'bot_worker' for one it started; absent for an interactive chat.
   source_type?: string
+  source_id?: string
   status: 'idle' | 'running' | 'error' | 'interrupted'
   error?: string
   archived?: boolean

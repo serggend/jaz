@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   SESSION_PAGE_SIZE,
+  botSessionGroups,
   applySidebarProjectOrder,
   applySessionDragOrder,
   sessionDisplayBlocks,
@@ -164,4 +165,47 @@ test('shows project groups only when they contain visible unpinned sessions', ()
   const removed = sidebarSessionSections(sessions, projects.filter((project) => project.path !== '/active'))
   expect(removed.groups).toEqual([])
   expect(removed.ungrouped.map((entry) => entry.session.id)).toEqual(['thread'])
+})
+
+describe('bot worker session groups', () => {
+  test('groups interleaved workers by bot, preserving activity order regardless of project or parent', () => {
+    const groups = botSessionGroups([
+      { id: 'a-new', source_id: 'a', parent_id: 'unrelated', runtime_ref: { cwd: '/shared' } },
+      { id: 'b-new', source_id: 'b', runtime_ref: { cwd: '/shared' } },
+      { id: 'a-old', source_id: 'a', runtime_ref: { cwd: '/different' } },
+    ], [
+      { id: 'b', name: 'Builder' },
+      { id: 'a', name: 'Researcher' },
+      { id: 'empty', name: 'No workers' },
+    ])
+
+    expect(groups.map((group) => group.label)).toEqual(['Researcher', 'Builder'])
+    expect(groups.map((group) => group.items.map((item) => item.session.id)))
+      .toEqual([['a-new', 'a-old'], ['b-new']])
+    expect(groups[0].bot.id).toBe('a')
+    expect(groups[0].items.every((item) => !item.child)).toBe(true)
+  })
+
+  test('keeps bots with identical names separate', () => {
+    const groups = botSessionGroups([
+      { id: 'one', source_id: 'a' },
+      { id: 'two', source_id: 'b' },
+    ], [{ id: 'a', name: 'Assistant' }, { id: 'b', name: 'Assistant' }])
+
+    expect(groups.map((group) => group.key)).toEqual(['a', 'b'])
+    expect(groups.map((group) => group.label)).toEqual(['Assistant', 'Assistant'])
+  })
+
+  test('keeps history reachable when bots are deleted, unavailable, or ownership is missing', () => {
+    const groups = botSessionGroups([
+      { id: 'one', source_id: 'deleted' },
+      { id: 'two', source_id: 'loading' },
+      { id: 'legacy' },
+    ], [])
+
+    expect(groups.map((group) => group.label)).toEqual(['Bot deleted', 'Bot loading', 'Unknown bot'])
+    expect(groups.flatMap((group) => group.items.map((item) => item.session.id)))
+      .toEqual(['one', 'two', 'legacy'])
+    expect(botSessionGroups([], [{ id: 'empty', name: 'Empty' }])).toEqual([])
+  })
 })
