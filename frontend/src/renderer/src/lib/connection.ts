@@ -144,6 +144,13 @@ function activate(value: Attempt, candidate: Candidate): void {
     value.revision = authoritative.revision
   }
   setApiAuthToken(candidate.url, candidate.token, candidate.ticket)
+  if (clientRuntime.kind === 'web' && candidate.token && !candidate.remembered) {
+    try {
+      rememberApiAuthToken(candidate.url, () => current(value))
+    } catch {
+      // Storage denial must not discard the verified in-memory session.
+    }
+  }
   setState({ status: 'connected', url: candidate.url, pairing: null, error: null })
   if (ownsConnection) {
     if (candidate.url === LOCAL_URL && clientRuntime.kind === 'electron') {
@@ -151,7 +158,7 @@ function activate(value: Attempt, candidate: Candidate): void {
     } else {
       clearConnectionPreference()
       rememberBackend(candidate.url, new Date().toISOString())
-      if (candidate.remembered) {
+      if (candidate.remembered || clientRuntime.kind !== 'electron') {
         savePreference({ mode: 'remote', remoteUrl: candidate.url })
       }
     }
