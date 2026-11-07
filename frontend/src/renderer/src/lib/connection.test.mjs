@@ -55,8 +55,9 @@ async function settle() {
   }
 }
 
-async function fixture({ auth, pairing = false, storedValues = [], encryptCredential, decryptCredential, health, registration, notifications = false, startLocalBackend, renderNotifications = false, owner = true, initialSnapshot, feature } = {}) {
+async function fixture({ auth, pairing = false, storedValues = [], encryptCredential, decryptCredential, health, registration, notifications = false, startLocalBackend, renderNotifications = false, owner = true, initialSnapshot, feature, browser = false, denyCredentialStorage = false } = {}) {
   const stored = new Map(storedValues)
+  const requests = []
   const configured = []
   const timers = new Map()
   let nextTimer = 0
@@ -95,10 +96,18 @@ async function fixture({ auth, pairing = false, storedValues = [], encryptCreden
       getDeviceMetadata: async () => ({ name: 'Test device' }),
     },
   })
+  if (browser) {
+    delete window.jaz
+    replace('navigator', { platform: 'iPhone' })
+    stored.set('jaz.deviceIdentity', JSON.stringify({ device_id: 'identity', public_key: 'public' }))
+  }
   replace('document', { visibilityState: 'visible', addEventListener() {} })
   replace('localStorage', {
     getItem: (key) => stored.get(key) ?? null,
-    setItem: (key, value) => stored.set(key, value),
+    setItem: (key, value) => {
+      if (denyCredentialStorage && key.startsWith('jaz.backendAuth.')) throw new Error('Storage denied')
+      stored.set(key, value)
+    },
     removeItem: (key) => stored.delete(key),
   })
   window.localStorage = localStorage
@@ -108,6 +117,7 @@ async function fixture({ auth, pairing = false, storedValues = [], encryptCreden
   })
   replace('clearTimeout', (id) => timers.delete(id))
   replace('fetch', async (url, init) => {
+    requests.push({ url, init })
     const target = new URL(url)
     if (target.hostname === '127.0.0.1' && target.pathname === '/health') {
       return Response.json({ ok: false })
@@ -147,6 +157,7 @@ async function fixture({ auth, pairing = false, storedValues = [], encryptCreden
   return {
     connection,
     stored,
+    requests,
     configured,
     timers,
     session,
@@ -157,6 +168,50 @@ async function fixture({ auth, pairing = false, storedValues = [], encryptCreden
     },
   }
 }
+
+test('a browser remembers an approved device and restores it after reload without pairing again', async () => {
+  const target = 'https://jaz.example'
+  const auth = (init) => {
+    expect(init.headers.Authorization).toBe('Bearer jaz_device-token')
+    return Response.json({ ok: true, auth_kind: 'device', device_id: 'identity' })
+  }
+  const first = await fixture({ browser: true, pairing: true, auth })
+  await first.connection.connectRemote(target)
+  expect(first.connection.useConnection().status).toBe('pending_approval')
+  expect(first.stored.has('jaz.backendAuth.' + target)).toBe(false)
+  await first.pollPairing()
+  expect(first.connection.useConnection().status).toBe('connected')
+  expect(first.stored.get('jaz.backendAuth.' + target)).toBe('jaz_device-token')
+  expect(first.connection.connectionPreference()).toEqual({ mode: 'remote', remoteUrl: target })
+  const storedValues = [...first.stored]
+  first.connection.disconnectBackend()
+  const restarted = await fixture({ browser: true, storedValues, auth })
+  expect(restarted.connection.useConnection().status).toBe('connected')
+  expect(restarted.connection.cachedApiAuthToken(target)).toBe('jaz_device-token')
+  expect(restarted.requests.map(({ url }) => new URL(url).pathname)).toEqual(['/health', '/v1/auth/check'])
+})
+
+test('a browser never saves an approved pairing token rejected by verification', async () => {
+  const { connection, stored, pollPairing } = await fixture({
+    browser: true, pairing: true, auth: () => Response.json({ error: 'revoked' }, { status: 401 }),
+  })
+  await connection.connectRemote('https://jaz.example')
+  await pollPairing()
+  expect(connection.useConnection().status).toBe('disconnected')
+  expect(stored.has('jaz.backendAuth.https://jaz.example')).toBe(false)
+  expect(connection.connectionPreference()).toBeNull()
+})
+
+test('browser storage denial preserves the verified session in memory', async () => {
+  const { connection, stored } = await fixture({
+    browser: true, denyCredentialStorage: true,
+    auth: () => Response.json({ ok: true, auth_kind: 'device', device_id: 'identity' }),
+  })
+  expect(await connection.connectRemote('https://jaz.example#key=jaz_fresh')).toBeNull()
+  expect(connection.useConnection().status).toBe('connected')
+  expect(connection.cachedApiAuthToken('https://jaz.example')).toBe('jaz_fresh')
+  expect(stored.has('jaz.backendAuth.https://jaz.example')).toBe(false)
+})
 
 test('an enrollment credential rejected by verification does not connect', async () => {
   const { connection } = await fixture({ auth: () => Response.json({ error: 'revoked' }, { status: 401 }) })
@@ -411,13 +466,13 @@ test.each([false, true])('notifications use only credentials resolved by connect
   expect(stored.get('jaz.backendAuth.' + target)).toBe('enc:v1:sealed-credential')
 })
 
-test('a late same-origin candidate cannot replace the verified token or ticket', async () => {
+test.each([false, true])('a late same-origin candidate cannot replace the verified token or ticket (browser: %j)', async (browser) => {
   let respond
   let requested
   const waiting = new Promise((resolve) => {
     requested = resolve
   })
-  const { connection, stored } = await fixture({ auth: (init) => {
+  const { connection, stored } = await fixture({ browser, auth: (init) => {
     if (init.headers.Authorization === 'Bearer jaz_first') {
       requested()
       return new Promise((resolve) => {
@@ -433,8 +488,8 @@ test('a late same-origin candidate cannot replace the verified token or ticket',
   await first
   expect(connection.cachedApiAuthToken('https://jaz.example')).toBe('jaz_second')
   expect(connection.apiEmbeddedGetUrl('/v1/sessions/thread/file?raw=1')).toContain('new-ticket')
-  expect(connection.connectionPreference()).toBeNull()
-  expect(stored.has('jaz.backendAuth.https://jaz.example')).toBe(false)
+  expect(connection.connectionPreference()).toEqual(browser ? { mode: 'remote', remoteUrl: 'https://jaz.example' } : null)
+  expect(stored.get('jaz.backendAuth.https://jaz.example')).toBe(browser ? 'jaz_second' : undefined)
 })
 
 test('explicit remember failure preserves the verified session and prior ciphertext', async () => {

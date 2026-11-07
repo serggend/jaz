@@ -66,8 +66,76 @@ function fixture(base = 'https://jaz.example', jaz) {
   const api = module.exports
   api.setApiBaseUrl(base)
   api.setApiAuthToken(base, 'device-credential')
-  return { api, sockets }
+  return { api, sockets, stored }
 }
+
+test('browser credentials survive a fresh client, stay scoped to the backend, and can be forgotten', () => {
+  const target = 'https://jaz.example'
+  const { api, stored } = fixture(target)
+  api.rememberApiAuthToken(target, () => true)
+  expect(stored.get('jaz.backendAuth.' + target)).toBe('device-credential')
+  const restarted = { exports: {} }
+  evaluate(restarted, restarted.exports)
+  expect(restarted.exports.cachedApiAuthToken(target)).toBe('')
+  expect(restarted.exports.restoreApiAuthToken(target + '/')).toBe('device-credential')
+  expect(restarted.exports.restoreApiAuthToken('https://other.example')).toBe('')
+  restarted.exports.forgetApiAuthToken(target)
+  expect(restarted.exports.restoreApiAuthToken(target)).toBe('')
+})
+
+test('browser clients cannot restore desktop ciphertext without the keychain', () => {
+  const { api, stored } = fixture()
+  stored.set('jaz.backendAuth.https://jaz.example', 'enc:v1:sealed')
+  expect(() => api.restoreApiAuthToken('https://jaz.example')).toThrow('not securely encrypted')
+})
+
+test('desktop clients reject plaintext and refuse to remember without a keychain', () => {
+  const { api, stored } = fixture('https://jaz.example', { apiBaseUrl: 'https://jaz.example' })
+  stored.set('jaz.backendAuth.https://jaz.example', 'older-plaintext')
+  expect(() => api.restoreApiAuthToken('https://jaz.example')).toThrow('not securely encrypted')
+  expect(() => api.rememberApiAuthToken('https://jaz.example', () => true)).toThrow('Secure credential storage')
+  expect(stored.get('jaz.backendAuth.https://jaz.example')).toBe('older-plaintext')
+})
+
+test('desktop credentials remain encrypted and encryption failure preserves previous storage', () => {
+  let denied = false
+  const { api, stored } = fixture('https://jaz.example', {
+    apiBaseUrl: 'https://jaz.example',
+    encryptCredential(token) {
+      expect(token).toBe('device-credential')
+      if (denied) throw new Error('Keychain denied')
+      return 'sealed'
+    },
+    decryptCredential(ciphertext) {
+      expect(ciphertext).toBe('sealed')
+      return 'device-credential'
+    },
+  })
+  api.rememberApiAuthToken('https://jaz.example', () => true)
+  expect(stored.get('jaz.backendAuth.https://jaz.example')).toBe('enc:v1:sealed')
+  expect(api.restoreApiAuthToken('https://jaz.example')).toBe('device-credential')
+  denied = true
+  expect(() => api.rememberApiAuthToken('https://jaz.example', () => true)).toThrow('Keychain denied')
+  expect(stored.get('jaz.backendAuth.https://jaz.example')).toBe('enc:v1:sealed')
+})
+
+test('a session change during keychain encryption prevents a stale credential write', () => {
+  const { api, stored } = fixture('https://jaz.example', {
+    apiBaseUrl: 'https://jaz.example',
+    encryptCredential() {
+      api.setApiAuthToken('https://jaz.example', 'replacement')
+      return 'stale-ciphertext'
+    },
+  })
+  expect(() => api.rememberApiAuthToken('https://jaz.example', () => true)).toThrow('Connection changed')
+  expect(stored.has('jaz.backendAuth.https://jaz.example')).toBe(false)
+})
+
+test('an obsolete connection attempt cannot persist a browser credential', () => {
+  const { api, stored } = fixture()
+  expect(() => api.rememberApiAuthToken('https://jaz.example', () => false)).toThrow()
+  expect(stored.has('jaz.backendAuth.https://jaz.example')).toBe(false)
+})
 
 test('browser transports keep device credentials in headers and bound URLs to read tickets', async () => {
   const { api, sockets } = fixture()

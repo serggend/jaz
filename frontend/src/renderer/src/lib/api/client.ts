@@ -175,6 +175,9 @@ export function restoreApiAuthToken(url: string): string {
   if (!stored) {
     return ''
   }
+  if (clientRuntime.kind === 'web' && !stored.startsWith('enc:v1:')) {
+    return stored
+  }
   if (!stored.startsWith('enc:v1:') || !clientRuntime.decryptCredential) {
     throw new Error('Saved connection is not securely encrypted')
   }
@@ -184,14 +187,14 @@ export function restoreApiAuthToken(url: string): string {
 export function rememberApiAuthToken(url: string, current: () => boolean): void {
   const token = cachedApiAuthToken(url)
   const revision = credentialRevision
-  if (!token || !clientRuntime.encryptCredential || !current()) {
+  if (!token || (clientRuntime.kind !== 'web' && !clientRuntime.encryptCredential) || !current()) {
     throw new Error('Secure credential storage is unavailable')
   }
-  const ciphertext = clientRuntime.encryptCredential(token)
+  const stored = clientRuntime.encryptCredential ? 'enc:v1:' + clientRuntime.encryptCredential(token) : token
   if (revision !== credentialRevision || token !== cachedApiAuthToken(url) || !current()) {
     throw new Error('Connection changed before it could be remembered')
   }
-  localStorage.setItem(authStorageKey(url), 'enc:v1:' + ciphertext)
+  localStorage.setItem(authStorageKey(url), stored)
 }
 
 export function setApiAuthToken(url: string, token?: string | null, ticket?: ResourceTicket): void {
